@@ -8,15 +8,20 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape // Системний імпорт форми
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer // Додано для апаратного розмиття меж кутів
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import com.example.torrentstreamer.ui.theme.TorrentStreamerTheme
 import kotlinx.coroutines.CancellationException
@@ -35,7 +40,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        // Запуск нашого вбудованого TorrServer Matrix
         TorrServerManager.start(this)
 
         setContent {
@@ -47,18 +51,15 @@ class MainActivity : ComponentActivity() {
                 val screenScale by animateFloatAsState(targetValue = 1f - (backProgress * 0.08f), label = "")
                 val corners by animateDpAsState(targetValue = if (backProgress > 0f) 32.dp else 0.dp, label = "")
 
-                // Отримуємо стейт історії перегляду з ViewModel
                 val watchHistory by viewModel.watchHistory.collectAsState()
 
-                // 🔄 Авто-оновлення списку торрентів при виході з налаштувань чи Web UI
                 LaunchedEffect(showWebAdmin, showNativeSettings) {
                     if (!showWebAdmin && !showNativeSettings) {
                         viewModel.refreshTorrents(showSpinner = false)
-                        viewModel.loadSettings() // Надійна синхронізація з Web UI на льоту
+                        viewModel.loadSettings()
                     }
                 }
 
-                // Дефолтний обробник системного жесту "Назад" (Predictive Back)
                 PredictiveBackHandler(enabled = showWebAdmin || showNativeSettings || currentStreamUrl != null || currentTorrent != null) { progress ->
                     try {
                         progress.collect { event -> backProgress = event.progress }
@@ -71,69 +72,97 @@ class MainActivity : ComponentActivity() {
                         showWebAdmin = false
                         showNativeSettings = false
                     } catch (e: CancellationException) {
-                        // Очікувано при скасуванні жесту користувачем
+                        // Очікувано
                     } finally {
                         backProgress = 0f
                     }
                 }
 
-                // РЕЗОЛВ: Рендеримо красиве розмите апаратне затінення навколо кутів при Predictive Back
-                Surface(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = screenScale
-                            scaleY = screenScale
-                            // Апаратна розмита тінь навколо кутів екрана для ефекту м'яких меж
-                            shadowElevation = if (backProgress > 0f) 24f * backProgress else 0f
-                            shape = RoundedCornerShape(corners.coerceAtLeast(0.dp))
-                            clip = true
-                        },
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.background
-                ) {
-                    when {
-                        showWebAdmin -> TorrWebScreen { showWebAdmin = false }
-                        showNativeSettings -> VibeSettingsScreen(viewModel, { showNativeSettings = false }, { showWebAdmin = true })
-
-                        // 1. Екран Плеєра
-                        currentStreamUrl != null && currentStreamTitle != null -> {
-                            PlayerScreen(
-                                videoUrl = currentStreamUrl!!,
-                                title = currentStreamTitle!!,
-                                onBack = {
-                                    currentStreamUrl = null
-                                    currentStreamTitle = null
-                                }
-                            )
-                        }
-
-                        // 2. Екран вибору серій
-                        currentTorrent != null -> {
-                            FileSelectionScreen(
-                                torrent = currentTorrent!!,
-                                viewModel = viewModel, // Передаємо ViewModel
-                                onBack = { currentTorrent = null },
-                                onFileSelect = { url, title ->
-                                    currentStreamUrl = url
-                                    currentStreamTitle = title
-                                }
-                            )
-                        }
-
-                        // 3. Головна вітрина додатку
-                        else -> VibeHomeScreen(
-                            viewModel = viewModel,
-                            onTorrentClick = { torrent ->
-                                // Миттєво та синхронно ініціюємо завантаження та очищення серій при кліку на картку!
-                                viewModel.loadFiles(torrent.hash, force = false) // ОНОВЛЕНО: Передаємо force = false за замовчуванням
-                                currentTorrent = torrent
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = screenScale
+                                scaleY = screenScale
+                                shadowElevation = if (backProgress > 0f) 24f * backProgress else 0f
+                                shape = RoundedCornerShape(corners.coerceAtLeast(0.dp))
+                                clip = true
                             },
-                            onOpenAdmin = { showNativeSettings = true },
-                            onResumeClick = { historyItem ->
-                                currentStreamUrl = historyItem.videoUrl
-                                currentStreamTitle = historyItem.title
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.background
+                    ) {
+                        when {
+                            showWebAdmin -> TorrWebScreen { showWebAdmin = false }
+                            showNativeSettings -> VibeSettingsScreen(viewModel, { showNativeSettings = false }, { showWebAdmin = true })
+
+                            currentStreamUrl != null && currentStreamTitle != null -> {
+                                PlayerScreen(
+                                    videoUrl = currentStreamUrl!!,
+                                    title = currentStreamTitle!!,
+                                    viewModel = viewModel,
+                                    onBack = {
+                                        currentStreamUrl = null
+                                        currentStreamTitle = null
+                                    }
+                                )
                             }
-                        )
+
+                            currentTorrent != null -> {
+                                FileSelectionScreen(
+                                    torrent = currentTorrent!!,
+                                    viewModel = viewModel,
+                                    onBack = { currentTorrent = null },
+                                    onFileSelect = { url, title ->
+                                        currentStreamUrl = url
+                                        currentStreamTitle = title
+                                    }
+                                )
+                            }
+
+                            else -> VibeHomeScreen(
+                                viewModel = viewModel,
+                                onTorrentClick = { torrent ->
+                                    viewModel.loadFiles(torrent.hash, force = false)
+                                    currentTorrent = torrent
+                                },
+                                onOpenAdmin = { showNativeSettings = true },
+                                onResumeClick = { historyItem ->
+                                    currentStreamUrl = historyItem.videoUrl
+                                    currentStreamTitle = historyItem.title
+                                }
+                            )
+                        }
+                    }
+
+                    // ОНОВЛЕНО: Міні-плеєр приховується, якщо відкритий повний плеєр АБО веб-панель адміна!
+                    val isFullScreenActive = currentStreamUrl != null && currentStreamTitle != null
+                    val shouldShowMiniPlayer = !isFullScreenActive && !showWebAdmin
+
+                    if (shouldShowMiniPlayer) {
+                        val latestSession by viewModel.latestSession.collectAsState()
+                        val currentUrl by viewModel.currentPlayingUrl.collectAsState()
+
+                        if (latestSession != null || currentUrl != null) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .navigationBarsPadding()
+                                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                                    .zIndex(10f)
+                            ) {
+                                MiniPlayer(
+                                    viewModel = viewModel,
+                                    onClick = {
+                                        val activeUrl = currentUrl ?: latestSession?.videoUrl
+                                        val activeTitle = viewModel.currentPlayingTitle.value ?: latestSession?.title
+                                        if (activeUrl != null && activeTitle != null) {
+                                            currentStreamUrl = activeUrl
+                                            currentStreamTitle = activeTitle
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }

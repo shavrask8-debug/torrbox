@@ -1,6 +1,7 @@
 package com.example.torrentstreamer
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -130,7 +131,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Заміна Magnet-посилання з надійним копіюванням та збереженням у SharedPreferences
     fun replaceTorrentWithMagnet(oldHash: String, magnet: String, title: String, poster: String, category: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -160,7 +160,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Заміна .torrent файлу з надійним копіюванням та збереженням у SharedPreferences
     fun replaceTorrentFromFile(oldHash: String, uri: Uri, title: String, poster: String, category: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -301,7 +300,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ВИПРАВЛЕНО: Зберігаємо та оновлюємо URL постерів надійно у SharedPreferences для запобігання втрати при опитуваннях
     fun updateTorrent(hash: String, title: String, posterInput: String, category: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -334,7 +332,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     posterPrefs.edit().remove(hash).apply()
                 }
 
-                // Оновлюємо тач-сервер
                 api.actionPost(TorrentAction(action = "set", hash = hash, title = title, poster = ""))
                 refreshTorrents(showSpinner = false)
             } catch (e: Exception) {
@@ -445,6 +442,128 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val isFinished = dur > 0 && pos >= (dur - 20000)
             dao.saveProgress(WatchHistory(url, title, pos, dur, isFinished, System.currentTimeMillis()))
+        }
+    }
+
+    // ==========================================
+    // СТЕЙТ-БРИДЖ СИНХРОНІЗАЦІЇ МЕДІА-ПЛЕЄРА (Media3)
+    // ==========================================
+
+    val playerInstance: StateFlow<androidx.media3.exoplayer.ExoPlayer?> = PlaybackService.playerInstance
+    val currentPlayingUrl: StateFlow<String?> = PlaybackService.currentPlayingUrl
+    val currentPlayingTitle: StateFlow<String?> = PlaybackService.currentTitle
+    val isPlayerPlaying: StateFlow<Boolean> = PlaybackService.isPlayerPlaying
+    val playerPosition: StateFlow<Long> = PlaybackService.currentPosition
+    val playerDuration: StateFlow<Long> = PlaybackService.duration
+    val availableAudioTracks: StateFlow<List<AudioTrackInfo>> = PlaybackService.audioTracks
+    val isBuffering: StateFlow<Boolean> = PlaybackService.isBuffering
+
+    /**
+     * Ініціює старт фонового сервісу відтворення з передачею URL та назви.
+     */
+    fun playVideo(url: String, title: String) {
+        viewModelScope.launch {
+            markAsLastUsed(url, title)
+
+            if (PlaybackService.currentPlayingUrl.value == url) {
+                return@launch
+            }
+
+            val intent = Intent(getApplication(), PlaybackService::class.java)
+            getApplication<Application>().startService(intent)
+
+            val playIntent = Intent(getApplication(), PlaybackService::class.java).apply {
+                action = PlaybackService.ACTION_PLAY
+                putExtra(PlaybackService.EXTRA_URL, url)
+                putExtra(PlaybackService.EXTRA_TITLE, title)
+            }
+            getApplication<Application>().startService(playIntent)
+        }
+    }
+
+    /**
+     * Перемикає стан відтворення (Play/Pause).
+     */
+    fun togglePlayback() {
+        val playPauseIntent = Intent(getApplication(), PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_TOGGLE_PLAY
+        }
+        getApplication<Application>().startService(playPauseIntent)
+    }
+
+    /**
+     * Виконує перемотування на вказану позицію.
+     */
+    fun seekToPosition(positionMs: Long) {
+        PlaybackService.playerInstance.value?.seekTo(positionMs)
+
+        // ОНОВЛЕНО: Тепер викликається правильний статичний метод миттєвої синхронізації updateCurrentPosition
+        PlaybackService.updateCurrentPosition(positionMs)
+
+        val serviceIntent = Intent(getApplication(), PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_SEEK
+            putExtra(PlaybackService.EXTRA_POSITION, positionMs)
+        }
+        getApplication<Application>().startService(serviceIntent)
+    }
+
+    /**
+     * Надсилає інтент для зміни аудіодоріжки.
+     */
+    fun changeAudioTrack(groupIndex: Int, trackIndex: Int) {
+        val intent = Intent(getApplication(), PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_SELECT_TRACK
+            putExtra(PlaybackService.EXTRA_GROUP_INDEX, groupIndex)
+            putExtra(PlaybackService.EXTRA_TRACK_INDEX, trackIndex)
+        }
+        getApplication<Application>().startService(intent)
+    }
+
+    // ==========================================
+    // Системні методи перемикання епізодів
+    // ==========================================
+
+    fun playNextEpisode() {
+        val currentUrl = currentPlayingUrl.value ?: latestSession.value?.videoUrl ?: return
+        val urlParts = currentUrl.split("/")
+        if (urlParts.size < 5) return
+        val hash = urlParts[urlParts.size - 2]
+        val currentIndex = urlParts.last().toIntOrNull() ?: return
+
+        viewModelScope.launch {
+            if (_files.value.isEmpty()) {
+                loadFiles(hash)
+            }
+            val fileList = _files.value
+            val currentFileIdx = fileList.indexOfFirst { it.index == currentIndex }
+            if (currentFileIdx != -1 && currentFileIdx < fileList.lastIndex) {
+                val nextFile = fileList[currentFileIdx + 1]
+                val nextUrl = "http://127.0.0.1:8090/play/$hash/${nextFile.index}"
+                val cleanTitle = nextFile.path.substringAfterLast("/")
+                playVideo(nextUrl, cleanTitle)
+            }
+        }
+    }
+
+    fun playPreviousEpisode() {
+        val currentUrl = currentPlayingUrl.value ?: latestSession.value?.videoUrl ?: return
+        val urlParts = currentUrl.split("/")
+        if (urlParts.size < 5) return
+        val hash = urlParts[urlParts.size - 2]
+        val currentIndex = urlParts.last().toIntOrNull() ?: return
+
+        viewModelScope.launch {
+            if (_files.value.isEmpty()) {
+                loadFiles(hash)
+            }
+            val fileList = _files.value
+            val currentFileIdx = fileList.indexOfFirst { it.index == currentIndex }
+            if (currentFileIdx > 0) {
+                val prevFile = fileList[currentFileIdx - 1]
+                val prevUrl = "http://127.0.0.1:8090/play/$hash/${prevFile.index}"
+                val cleanTitle = prevFile.path.substringAfterLast("/")
+                playVideo(prevUrl, cleanTitle)
+            }
         }
     }
 }

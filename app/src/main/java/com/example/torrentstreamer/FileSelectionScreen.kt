@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberOverscrollEffect
 import androidx.compose.foundation.overscroll
+import androidx.compose.foundation.ScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -34,6 +35,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -43,6 +45,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.example.torrentstreamer.data.AppDatabase
 import com.example.torrentstreamer.data.WatchHistory
@@ -67,10 +70,15 @@ fun FileSelectionScreen(
     val files by viewModel.files.collectAsState()
     val isLoadingFiles by viewModel.isLoadingFiles.collectAsState()
     val watchHistory by viewModel.watchHistory.collectAsState()
+
+    // ОНОВЛЕНО: Додано підписку на потік сесії для розрахунку відступів
+    val latestSession by viewModel.latestSession.collectAsState()
     val density = LocalDensity.current
 
     val dao = remember { AppDatabase.getDatabase(context.applicationContext).watchHistoryDao() }
     var activeActionFile by remember { mutableStateOf<TorrentFile?>(null) }
+
+    val indicatorHeightPx = remember(density) { with(density) { 56.dp.toPx() } }
 
     var showLoader by remember { mutableStateOf(false) }
     LaunchedEffect(isLoadingFiles) {
@@ -115,6 +123,15 @@ fun FileSelectionScreen(
         label = "pull_progress_smooth"
     )
 
+    val loaderAlphaAndScale by animateFloatAsState(
+        targetValue = if (isLoadingFiles) 1f else pullProgress,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "loader_alpha_scale"
+    )
+
     val currentPullOffsetPx = with(density) { (80.dp * pullProgress).toPx() }
 
     val contentTargetOffset = if (isLoadingFiles) {
@@ -138,21 +155,28 @@ fun FileSelectionScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            LargeTopAppBar(
-                title = {
-                    Text(
-                        text = torrent.title,
-                        fontWeight = FontWeight.Black,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
+            TopAppBar(
+                title = {},
                 navigationIcon = {
-                    IconButton(onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        onBack()
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                    FilledTonalIconButton(
+                        onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onBack()
+                        },
+                        shape = SquircleShape(cornerRadiusRatio = 0.3f, smoothing = 0.6f),
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        ),
+                        modifier = Modifier
+                            .padding(start = 12.dp)
+                            .size(40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Назад",
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 },
                 modifier = Modifier.statusBarsPadding()
@@ -172,46 +196,25 @@ fun FileSelectionScreen(
                     }
                 )
         ) {
-            if (pullProgress > 0f || isLoadingFiles) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 16.dp)
-                        .graphicsLayer {
-                            scaleX = pullProgress
-                            scaleY = pullProgress
-                            alpha = pullProgress
-                        }
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isLoadingFiles) {
-                        CircularWavyProgressIndicator(
-                            modifier = Modifier.size(40.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        )
-                    } else {
-                        CircularWavyProgressIndicator(
-                            modifier = Modifier.size(40.dp),
-                            progress = { pullProgress },
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        )
-                    }
-                }
-            }
-
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationY = animatedContentOffset
-                    }
                     .background(MaterialTheme.colorScheme.background)
             ) {
+                // 1. СТАТИЧНА КАРТКА ТОРРЕНТА (Залізно зафіксована у верхній частині)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .zIndex(2f)
+                ) {
+                    TorrentHeroHeader(
+                        torrent = torrent,
+                        filesCount = files.size,
+                        watchHistory = watchHistory
+                    )
+                }
+
                 if (files.isEmpty() && !showLoader) {
                     Box(
                         modifier = Modifier
@@ -228,49 +231,96 @@ fun FileSelectionScreen(
                         )
                     }
                 } else {
-                    LazyColumn(
+                    // 2. ЗОНА ФАЙЛІВ (Має нижчий Z-Index, що дозволяє індикатору висуватись з-під картки)
+                    Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .overscroll(rememberOverscrollEffect()),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clipToBounds()
+                            .zIndex(1f)
                     ) {
-                        // ОРГАНІЧНИЙ ХЕДЕР-ПОСТЕР
-                        item {
-                            TorrentHeroHeader(
-                                torrent = torrent,
-                                filesCount = files.size,
-                                watchHistory = watchHistory
-                            )
+                        val currentUrl by viewModel.currentPlayingUrl.collectAsState()
+                        val hasMiniPlayer = latestSession != null || currentUrl != null
+
+                        // Рухомий LazyColumn
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    translationY = animatedContentOffset
+                                }
+                        ) {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .overscroll(rememberOverscrollEffect()),
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    bottom = if (hasMiniPlayer) 100.dp else 24.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(
+                                    items = files,
+                                    key = { file: TorrentFile -> file.index }
+                                ) { file: TorrentFile ->
+                                    val cleanFileName = file.path.substringAfterLast("/")
+                                    val streamUrl = "http://127.0.0.1:8090/play/${torrent.hash}/${file.index}"
+                                    val historyItem = watchHistory.find { it.videoUrl == streamUrl }
+
+                                    TorrentFileExpressiveCard(
+                                        fileName = cleanFileName,
+                                        fileSize = file.size,
+                                        historyItem = historyItem,
+                                        promptVlcEnabled = promptVlc,
+                                        onClick = {
+                                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                            onFileSelect(streamUrl, cleanFileName)
+                                        },
+                                        onLongClick = {
+                                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                            activeActionFile = file
+                                        },
+                                        onExternalClick = {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                            openInVlc(context, streamUrl, cleanFileName)
+                                        }
+                                    )
+                                }
+                            }
                         }
 
-                        // СПИСОК СЕРІЙ З ЯВНИМИ ТИПАМИ ДЛЯ COMPILER K2
-                        items(
-                            items = files,
-                            key = { file: TorrentFile -> file.index }
-                        ) { file: TorrentFile ->
-                            val cleanFileName = file.path.substringAfterLast("/")
-                            val streamUrl = "http://127.0.0.1:8090/play/${torrent.hash}/${file.index}"
-                            val historyItem = watchHistory.find { it.videoUrl == streamUrl }
-
-                            TorrentFileExpressiveCard(
-                                fileName = cleanFileName,
-                                fileSize = file.size,
-                                historyItem = historyItem,
-                                promptVlcEnabled = promptVlc,
-                                onClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                                    onFileSelect(streamUrl, cleanFileName)
-                                },
-                                onLongClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                                    activeActionFile = file
-                                },
-                                onExternalClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    openInVlc(context, streamUrl, cleanFileName)
+                        if (loaderAlphaAndScale > 0.01f || isLoadingFiles) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .graphicsLayer {
+                                        translationY = animatedContentOffset * ratioCalculate(targetGapPx = 12.dp.toPx(), indicatorHeightPx = indicatorHeightPx.toFloat(), refreshTargetOffsetPx = refreshTargetOffsetPx) - indicatorHeightPx
+                                        scaleX = loaderAlphaAndScale
+                                        scaleY = loaderAlphaAndScale
+                                        alpha = loaderAlphaAndScale
+                                    }
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingFiles) {
+                                    CircularWavyProgressIndicator(
+                                        modifier = Modifier.size(40.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    )
+                                } else {
+                                    CircularWavyProgressIndicator(
+                                        modifier = Modifier.size(40.dp),
+                                        progress = { pullProgress },
+                                        color = MaterialTheme.colorScheme.primary,
+                                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    )
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -278,7 +328,6 @@ fun FileSelectionScreen(
         }
     }
 
-    // ШТОРКА НАЛАШТУВАНЬ ТА КЕРУВАННЯ СТАТУСОМ СЕРІЇ
     activeActionFile?.let { file ->
         val cleanFileName = file.path.substringAfterLast("/")
         val streamUrl = "http://127.0.0.1:8090/play/${torrent.hash}/${file.index}"
@@ -294,7 +343,6 @@ fun FileSelectionScreen(
             onToggleWatched = {
                 scope.launch(Dispatchers.IO) {
                     if (isFinished) {
-                        // Скидання на непереглянуте (повернення в чергу)
                         dao.saveProgress(
                             WatchHistory(
                                 videoUrl = streamUrl,
@@ -306,7 +354,6 @@ fun FileSelectionScreen(
                             )
                         )
                     } else {
-                        // Позначити переглянутим
                         dao.saveProgress(
                             WatchHistory(
                                 videoUrl = streamUrl,
@@ -325,11 +372,15 @@ fun FileSelectionScreen(
             },
             onCopyLink = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                val clipData = android.content.ClipData.newPlainText("Streaming Link", streamUrl)
-                clipboard.setPrimaryClip(clipData)
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Streaming Link", streamUrl))
+                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
             }
         )
     }
+}
+
+private fun ratioCalculate(targetGapPx: Float, indicatorHeightPx: Float, refreshTargetOffsetPx: Float): Float {
+    return (targetGapPx + indicatorHeightPx) / refreshTargetOffsetPx
 }
 
 @Composable
@@ -342,9 +393,7 @@ fun TorrentHeroHeader(
     val watchedCount = watchHistory.count { it.videoUrl.contains(torrent.hash) && it.isFinished }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth(),
         shape = SquircleShape(cornerRadiusRatio = 0.16f, smoothing = 0.6f),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -687,7 +736,7 @@ fun FileActionsBottomSheet(
             if (promptVlcEnabled) {
                 ListItem(
                     headlineContent = { Text("Відкрити у зовнішньому плеєрі", fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("Запустити стрім через VLC або інший системний плеєр") },
+                    supportingContent = { Text("Запустити відтворення через VLC або інший плеєр") },
                     leadingContent = {
                         Icon(
                             imageVector = Icons.Default.OpenInNew,
@@ -706,8 +755,8 @@ fun FileActionsBottomSheet(
             }
 
             ListItem(
-                headlineContent = { Text("Копіювати пряме посилання", fontWeight = FontWeight.Bold) },
-                supportingContent = { Text("Зберегти мережеву адресу потоку в буфер обміну") },
+                headlineContent = { Text("Копіювати посилання", fontWeight = FontWeight.Bold) },
+                supportingContent = { Text("Зберегти пряму адресу потоку в буфер обміну") },
                 leadingContent = {
                     Icon(
                         imageVector = Icons.Default.ContentCopy,

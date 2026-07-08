@@ -6,7 +6,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.*
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.torrentstreamer.data.WatchHistory
 
 sealed interface Screen {
     object Home : Screen
@@ -21,7 +20,6 @@ fun MainScreen() {
     val viewModel: MainViewModel = viewModel()
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
-    // Отримуємо стейт історії переглядів
     val watchHistory by viewModel.watchHistory.collectAsState()
 
     AnimatedContent(
@@ -34,7 +32,6 @@ fun MainScreen() {
                 VibeHomeScreen(
                     viewModel = viewModel,
                     onTorrentClick = { torrent ->
-                        // ОНОВЛЕНО: Миттєво запускаємо викачування серій при кліку
                         viewModel.loadFiles(torrent.hash)
                         currentScreen = Screen.FileSelection(torrent)
                     },
@@ -67,9 +64,11 @@ fun MainScreen() {
                 )
             }
             is Screen.Player -> {
+                // ОНОВЛЕНО: Передаємо viewModel у конструктор PlayerScreen
                 PlayerScreen(
                     videoUrl = screen.streamUrl,
                     title = screen.title,
+                    viewModel = viewModel,
                     onBack = { currentScreen = Screen.Home }
                 )
             }

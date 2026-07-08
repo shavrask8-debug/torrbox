@@ -20,16 +20,11 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -65,7 +60,6 @@ import com.example.torrentstreamer.ui.theme.SquircleShape
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
-import kotlin.math.roundToInt
 
 @OptIn(
     ExperimentalFoundationApi::class,
@@ -114,7 +108,7 @@ fun VibeHomeScreen(
         if (searchQuery.isBlank()) {
             torrents
         } else {
-            torrents.filter { torrent ->
+            torrents.filter { torrent: Torrent ->
                 torrent.title.contains(searchQuery, ignoreCase = true) ||
                         (torrent.type ?: "Фільм").contains(searchQuery, ignoreCase = true)
             }
@@ -224,8 +218,15 @@ fun VibeHomeScreen(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val currentUrl by viewModel.currentPlayingUrl.collectAsState()
+                val isMiniPlayerActive = latestSession != null || currentUrl != null
+
                 FloatingActionButtonMenu(
                     expanded = isFabMenuOpen,
+                    modifier = Modifier
+                        .padding(bottom = if (isMiniPlayerActive) 80.dp else 0.dp)
+                        // ОНОВЛЕНО: Зсуваємо кнопку плюс по осі X праворуч для ідеального вертикального вирівнювання з кутом мініплеєра
+                        .offset(x = 6.dp),
                     button = {
                         ToggleFloatingActionButton(
                             checked = isFabMenuOpen,
@@ -407,8 +408,8 @@ fun VibeHomeScreen(
 
                                     val currentTime = System.currentTimeMillis()
                                     if (hoverItem != null && hoverItem.key != currentKey && (currentTime - lastSwapTime > 180L)) {
-                                        val fromIndex = editableList.indexOfFirst { it.hash == currentKey }
-                                        val toIndex = editableList.indexOfFirst { it.hash == hoverItem.key }
+                                        val fromIndex = editableList.indexOfFirst { t: Torrent -> t.hash == currentKey }
+                                        val toIndex = editableList.indexOfFirst { t: Torrent -> t.hash == hoverItem.key }
 
                                         if (fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
                                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -440,12 +441,19 @@ fun VibeHomeScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .overscroll(rememberOverscrollEffect()),
-                        contentPadding = PaddingValues(12.dp),
+                        contentPadding = PaddingValues(
+                            start = 12.dp,
+                            end = 12.dp,
+                            top = 12.dp,
+                            bottom = if (latestSession != null) 100.dp else 12.dp
+                        ),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalItemSpacing = 8.dp
                     ) {
-                        itemsIndexed(editableList, key = { _, t -> t.hash }) { index, torrent ->
-                            val currentIndex by rememberUpdatedState(index)
+                        itemsIndexed(
+                            items = editableList,
+                            key = { _: Int, t: Torrent -> t.hash }
+                        ) { index: Int, torrent: Torrent ->
                             val isCurrentDragged = draggedKey == torrent.hash
 
                             Box(
@@ -476,7 +484,7 @@ fun VibeHomeScreen(
                     val originalOffset = initiallyDraggedItemOffset
                     val size = draggedSize
                     if (currentKey != null && originalOffset != null && size != null) {
-                        val draggedTorrent = editableList.find { it.hash == currentKey }
+                        val draggedTorrent = editableList.find { t: Torrent -> t.hash == currentKey }
                         if (draggedTorrent != null) {
                             Box(
                                 modifier = Modifier
@@ -489,7 +497,8 @@ fun VibeHomeScreen(
                                         translationY = originalOffset.y + dragOffset.y
                                         scaleX = 1.05f
                                         scaleY = 1.05f
-                                        shadowElevation = 24f
+                                        // ОНОВЛЕНО: Прибрано зайву тінь під час перетягування для плаского M3E стилю
+                                        shadowElevation = 0f
                                     }
                             ) {
                                 TorrentExpressiveCard(
@@ -501,20 +510,6 @@ fun VibeHomeScreen(
                             }
                         }
                     }
-                }
-            }
-
-            latestSession?.let { session ->
-                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    MiniPlayer(
-                        session = session,
-                        onTogglePlay = {
-                            PlaybackService.playerInstance?.let { player ->
-                                if (player.isPlaying) player.pause() else player.play()
-                            }
-                        },
-                        onClick = { onResumeClick(session) }
-                    )
                 }
             }
         }
@@ -568,16 +563,6 @@ fun TorrentExpressiveCard(
         label = "card_press_scale"
     )
 
-    val shadowElevationState by animateDpAsState(
-        targetValue = if (isDragged) 16.dp else 2.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "card_shadow"
-    )
-
-    val indication = LocalIndication.current
     val cardShape = SquircleShape(cornerRadiusRatio = 0.16f, smoothing = 0.6f)
 
     Card(
@@ -587,14 +572,16 @@ fun TorrentExpressiveCard(
             .clip(cardShape)
             .combinedClickable(
                 interactionSource = interactionSource,
-                indication = indication,
+                // ОНОВЛЕНО: Прибрано сіре напівпрозоре виділення при затисканні картки для переміщення
+                indication = null,
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     onClick()
                 }
             ),
         shape = cardShape,
-        elevation = CardDefaults.cardElevation(defaultElevation = shadowElevationState),
+        // ОНОВЛЕНО: Прибрано тіні картки для плаского, монолітного тонального вигляду
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         )
@@ -772,12 +759,17 @@ fun EditTorrentBottomSheet(
         sheetState = sheetState,
         shape = RoundedCornerShape(32.dp),
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        sheetGesturesEnabled = false, // ОНОВЛЕНО: Блокуємо випадкові жести згортання пальцем при скролі!
+        sheetGesturesEnabled = false,
         dragHandle = {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = SquircleShape(cornerRadiusRatio = 0.35f, smoothing = 0.6f)
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
                 TextButton(
@@ -789,6 +781,7 @@ fun EditTorrentBottomSheet(
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     ),
+                    shape = SquircleShape(cornerRadiusRatio = 0.3f, smoothing = 0.6f),
                     modifier = Modifier.align(Alignment.CenterStart)
                 ) {
                     Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp))
@@ -796,11 +789,16 @@ fun EditTorrentBottomSheet(
                     Text("Вилучити", fontWeight = FontWeight.Bold)
                 }
 
-                BottomSheetDefaults.DragHandle(
-                    modifier = Modifier.align(Alignment.Center)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                            shape = CircleShape
+                        )
                 )
-
-                Spacer(modifier = Modifier.size(40.dp).align(Alignment.CenterEnd))
 
                 Button(
                     onClick = {
@@ -812,9 +810,9 @@ fun EditTorrentBottomSheet(
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = SquircleShape(cornerRadiusRatio = 0.3f, smoothing = 0.6f),
                     modifier = Modifier.align(Alignment.CenterEnd),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
@@ -841,7 +839,7 @@ fun EditTorrentBottomSheet(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -897,14 +895,7 @@ fun EditTorrentBottomSheet(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    categoriesList.forEach { cat ->
-                        val icon = when (cat) {
-                            "Фільм" -> Icons.Default.Movie
-                            "Серіал" -> Icons.Default.Tv
-                            "Аніме" -> Icons.Default.Palette
-                            "Музика" -> Icons.Default.MusicNote
-                            else -> Icons.Default.MoreHoriz
-                        }
+                    categoriesList.forEach { cat: String ->
                         FilterChip(
                             selected = selectedCategory == cat,
                             onClick = {
@@ -923,7 +914,7 @@ fun EditTorrentBottomSheet(
 
                 ListItem(
                     headlineContent = { Text("Пріоритет завантаження", fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("Задіяти максимальний DHT пошук пірів") },
+                    supportingContent = { Text("Задіяти maximalний DHT пошук пірів") },
                     trailingContent = {
                         Switch(
                             checked = priorityDownload,
@@ -1017,7 +1008,7 @@ fun EditTorrentBottomSheet(
                 )
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(

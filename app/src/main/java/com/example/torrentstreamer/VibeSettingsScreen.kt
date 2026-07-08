@@ -80,6 +80,11 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
     var newHost by remember { mutableStateOf("") }
     var newKey by remember { mutableStateOf("") }
 
+    // Отримуємо стан міні-плеєра для динамічного відступу списку
+    val currentUrl by viewModel.currentPlayingUrl.collectAsState()
+    val latestSession by viewModel.latestSession.collectAsState()
+    val isMiniPlayerActive = latestSession != null || currentUrl != null
+
     val directoryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
@@ -116,7 +121,9 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                     Button(
                         onClick = {
                             view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            sharedPrefs.edit().putBoolean("prompt_vlc", promptVlc).apply()
+                            sharedPrefs.edit()
+                                .putBoolean("prompt_vlc", promptVlc)
+                                .apply()
                             viewModel.saveSettings(localSettings)
                         },
                         modifier = Modifier.padding(end = 12.dp),
@@ -136,7 +143,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                 .padding(paddingValues)
                 .fillMaxSize()
         ) {
-            // ВИПРАВЛЕНО: for-loop замість forEachIndexed вирішує проблему компілятора K2
             SingleChoiceSegmentedButtonRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -161,7 +167,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    // ВИПРАВЛЕНО: overscrollEffect перенесено в модифікатор overscroll
                     .verticalScroll(scrollState)
                     .overscroll(rememberOverscrollEffect())
                     .padding(vertical = 12.dp)
@@ -241,7 +246,7 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                                             torrentsSavePath = if (localSettings.torrentsSavePath.isNullOrBlank()) safeExtDir else localSettings.torrentsSavePath
                                         )
                                     },
-                                    color = if (localSettings.useDisk) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    color = if (localSettings.useDisk) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainerHigh,
                                     shape = RoundedCornerShape(16.dp),
                                     modifier = Modifier.weight(1f)
                                 ) {
@@ -292,7 +297,9 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                             onClick = {
                                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                 promptVlc = false
-                                sharedPrefs.edit().putBoolean("prompt_vlc", false).apply()
+                                sharedPrefs.edit()
+                                    .putBoolean("prompt_vlc", false)
+                                    .apply()
                                 val defaults = viewModel.resetSettingsToDefault()
                                 localSettings = defaults
                             },
@@ -306,6 +313,11 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                             Icon(Icons.Default.Restore, null)
                             Spacer(Modifier.width(8.dp))
                             Text("RESET TO DEFAULT", fontWeight = FontWeight.ExtraBold)
+                        }
+
+                        // Компенсаційний відступ для вільного скролу кнопки Reset над плаваючим міні-плеєром
+                        if (isMiniPlayerActive) {
+                            Spacer(modifier = Modifier.height(100.dp))
                         }
                     }
 
@@ -439,6 +451,11 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                                 }
                             }
                         }
+
+                        // Компенсаційний відступ для вільного скролу пошуку над плаваючим міні-плеєром
+                        if (isMiniPlayerActive) {
+                            Spacer(modifier = Modifier.height(100.dp))
+                        }
                     }
 
                     2 -> {
@@ -479,6 +496,7 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                         }
 
                         SettingsGroup(title = "Players") {
+                            // ОНОВЛЕНО: Повністю видалено налаштування ембієнт підсвічування для збереження чистоти коду та фокусу на продуктивності!
                             SwitchSetting(
                                 label = "Prompt to open video in VLC",
                                 checked = promptVlc
@@ -507,6 +525,11 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                                     )
                                 }
                             }
+                        }
+
+                        // Компенсаційний відступ для вільного скролу кнопок налаштувань та карти Advanced Web UI над плаваючим міні-плеєром
+                        if (isMiniPlayerActive) {
+                            Spacer(modifier = Modifier.height(100.dp))
                         }
                     }
                 }
