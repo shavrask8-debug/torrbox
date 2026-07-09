@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    package="com.example.torrentstreamer">
+
+    <!-- Тег атрибуції для належного аудиту фонового звуку на Android 12+ (усуває помилку AppOps) -->
+    <attribution android:tag="audioPlayback" android:label="@string/app_name" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -17,9 +20,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.TorrentStreamer"
-        android:usesCleartextTraffic="true"
-        android:enableOnBackInvokedCallback="true"
-        tools:targetApi="31">
+        android:enableOnBackInvokedCallback="true">
 
         <activity
             android:name=".MainActivity"

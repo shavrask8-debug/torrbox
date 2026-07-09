@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.*
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 
 sealed interface Screen {
     object Home : Screen
@@ -15,6 +17,7 @@ sealed interface Screen {
     data class Player(val streamUrl: String, val title: String) : Screen
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 fun MainScreen() {
     val viewModel: MainViewModel = viewModel()
@@ -64,7 +67,7 @@ fun MainScreen() {
                 )
             }
             is Screen.Player -> {
-                // ОНОВЛЕНО: Передаємо viewModel у конструктор PlayerScreen
+                // Виклик оригінального PlayerScreen (параметр isInPipMode підхопиться за замовчуванням = false)
                 PlayerScreen(
                     videoUrl = screen.streamUrl,
                     title = screen.title,

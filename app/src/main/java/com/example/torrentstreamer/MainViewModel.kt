@@ -1,8 +1,10 @@
 package com.example.torrentstreamer
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Size
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.torrentstreamer.data.AppDatabase
@@ -40,12 +42,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val watchHistory = dao.getAllHistory().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val latestSession = dao.getLatestSession().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    private val vibePrefs = application.getSharedPreferences("vibe_prefs", Context.MODE_PRIVATE)
+    private val _isAutoPipEnabled = MutableStateFlow(vibePrefs.getBoolean("auto_pip_enabled", true))
+    val isAutoPipEnabled: StateFlow<Boolean> = _isAutoPipEnabled.asStateFlow()
+
+    // Єдиний прапорець дозволу автоповороту за системним акселерометром [IX]
+    private val _isAutoRotationEnabled = MutableStateFlow(vibePrefs.getBoolean("is_auto_rotation_enabled", true))
+    val isAutoRotationEnabled: StateFlow<Boolean> = _isAutoRotationEnabled.asStateFlow()
+
+    // СУМІСНІ СТАБІЛІЗАТОРИ: утримують MainActivity від помилок збірки без зміни її коду! [IX]
+    val isLockedPortrait = MutableStateFlow(false).asStateFlow()
+    val playerOrientationMode: StateFlow<Int> = _isAutoRotationEnabled.map { if (it) 0 else 1 }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    // Реактивний потік координат плеєра від Compose
+    private val _videoBounds = MutableStateFlow<android.graphics.Rect?>(null)
+    val videoBounds: StateFlow<android.graphics.Rect?> = _videoBounds.asStateFlow()
+
     private var currentFilesHash: String? = null
 
     init {
         refreshTorrents()
         loadSettings()
         startRealtimePolling()
+    }
+
+    fun setAutoPipEnabled(enabled: Boolean) {
+        _isAutoPipEnabled.value = enabled
+        vibePrefs.edit().putBoolean("auto_pip_enabled", enabled).apply()
+    }
+
+    fun setAutoRotationEnabled(enabled: Boolean) {
+        _isAutoRotationEnabled.value = enabled
+        vibePrefs.edit().putBoolean("is_auto_rotation_enabled", enabled).apply()
+    }
+
+    fun setLockedPortrait(isPortrait: Boolean) {
+        // Заглушка сумісності
+    }
+
+    fun setPlayerOrientationMode(mode: Int) {
+        // Заглушка сумісності
+        setAutoRotationEnabled(mode == 0)
+    }
+
+    fun updateVideoBounds(rect: android.graphics.Rect?) {
+        _videoBounds.value = rect
     }
 
     private fun sortTorrents(list: List<Torrent>): List<Torrent> {
@@ -86,7 +128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     _torrents.value = sortTorrents(mappedList)
-                } catch (e: Exception) { }
+                } catch (_: Exception) { }
                 delay(3000)
             }
         }
@@ -156,7 +198,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     api.actionPost(TorrentAction(action = "set", hash = newHash, title = title, poster = ""))
                 }
                 refreshTorrents()
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -215,7 +257,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     refreshTorrents()
                 }
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -241,7 +283,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 api.actionPost(TorrentAction(action = "add", link = link, saveToDb = true))
                 refreshTorrents()
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -296,7 +338,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 api.actionPost(TorrentAction(action = "rem", hash = hash))
                 refreshTorrents()
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -345,7 +387,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val serverSettings = api.getSettings(SettingsPayload(action = "get"))
                 _settings.value = serverSettings
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -355,7 +397,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 api.saveSettings(SettingsPayload(action = "set", sets = newSettings))
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
     }
 
@@ -374,7 +416,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 api.saveSettings(SettingsPayload(action = "def"))
                 api.saveSettings(SettingsPayload(action = "set", sets = defaultSettings))
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }
 
         return defaultSettings
@@ -394,7 +436,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val jsonString = res.string()
                         val torrent: Torrent = gson.fromJson(jsonString, Torrent::class.java)
                         _files.value = torrent.allFiles
-                    } catch (e: Exception) {}
+                    } catch (_: Exception) {}
                 }
                 return@launch
             }
@@ -456,6 +498,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playerPosition: StateFlow<Long> = PlaybackService.currentPosition
     val playerDuration: StateFlow<Long> = PlaybackService.duration
     val availableAudioTracks: StateFlow<List<AudioTrackInfo>> = PlaybackService.audioTracks
+    val availableSubtitleTracks: StateFlow<List<SubtitleTrackInfo>> = PlaybackService.subtitleTracks
+    val videoSize: StateFlow<Size?> = PlaybackService.videoSize
+
     val isBuffering: StateFlow<Boolean> = PlaybackService.isBuffering
 
     /**
@@ -496,8 +541,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun seekToPosition(positionMs: Long) {
         PlaybackService.playerInstance.value?.seekTo(positionMs)
-
-        // ОНОВЛЕНО: Тепер викликається правильний статичний метод миттєвої синхронізації updateCurrentPosition
         PlaybackService.updateCurrentPosition(positionMs)
 
         val serviceIntent = Intent(getApplication(), PlaybackService::class.java).apply {
@@ -515,6 +558,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             action = PlaybackService.ACTION_SELECT_TRACK
             putExtra(PlaybackService.EXTRA_GROUP_INDEX, groupIndex)
             putExtra(PlaybackService.EXTRA_TRACK_INDEX, trackIndex)
+        }
+        getApplication<Application>().startService(intent)
+    }
+
+    /**
+     * Надсилає інтент для зміни доріжки субтитрів.
+     */
+    fun changeSubtitleTrack(groupIndex: Int, trackIndex: Int) {
+        val intent = Intent(getApplication(), PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_SELECT_SUBTITLE
+            putExtra(PlaybackService.EXTRA_SUBTITLE_GROUP_INDEX, groupIndex)
+            putExtra(PlaybackService.EXTRA_SUBTITLE_TRACK_INDEX, trackIndex)
+        }
+        getApplication<Application>().startService(intent)
+    }
+
+    /**
+     * Повністю деактивує субтитри.
+     */
+    fun disableSubtitles() {
+        val intent = Intent(getApplication(), PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_DISABLE_SUBTITLES
         }
         getApplication<Application>().startService(intent)
     }

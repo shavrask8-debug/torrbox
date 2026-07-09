@@ -1,10 +1,17 @@
+@file:Suppress("UnstableApiUsage", "DEPRECATION")
+
 package com.example.torrentstreamer
 
 import android.content.Intent
+import android.util.Size
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -24,10 +31,28 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        val player = ExoPlayer.Builder(this).build().apply {
-            repeatMode = Player.REPEAT_MODE_OFF
-            playWhenReady = true
+        // Адаптивний LoadControl для P2P-стрімінгу
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15000,
+                50000,
+                1000,
+                1500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        val renderersFactory = DefaultRenderersFactory(this).apply {
+            setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
         }
+
+        // Будуємо плеєр з підтримкою FFmpeg
+        val player = ExoPlayer.Builder(this, renderersFactory)
+            .setLoadControl(loadControl)
+            .build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                playWhenReady = true
+            }
         exoPlayer = player
         mediaSession = MediaSession.Builder(this, player).build()
 
@@ -42,7 +67,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onTracksChanged(tracks: Tracks) {
-                updateAudioTracks(tracks)
+                updateTracks(tracks)
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -50,6 +75,41 @@ class PlaybackService : MediaSessionService() {
 
                 if (state == Player.STATE_ENDED) {
                     saveFinishedState()
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    _videoSize.value = Size(videoSize.width, videoSize.height)
+                }
+            }
+
+            // Самолікування при крашах кодеків (DTS/AC3)
+            override fun onPlayerError(error: PlaybackException) {
+                _isPlayerPlaying.value = false
+                _isBuffering.value = false
+
+                val cause = error.cause
+                if (cause != null && cause.javaClass.name.contains("DecoderInitializationException")) {
+                    android.util.Log.w("PlaybackService", "Виявлено несумісний апаратний кодек. Запуск самовідновлення...")
+
+                    exoPlayer?.let { p ->
+                        val currentPos = p.currentPosition
+                        val wasPlaying = p.playWhenReady
+
+                        // Очищуємо проблемні оверрайти
+                        val parameters = p.trackSelectionParameters
+                            .buildUpon()
+                            .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_AUDIO)
+                            .build()
+                        p.trackSelectionParameters = parameters
+
+                        p.prepare()
+                        p.seekTo(currentPos)
+                        p.playWhenReady = wasPlaying
+                    }
+                } else {
+                    android.util.Log.e("PlaybackService", "Критична помилка відтворення: ${error.message}", error)
                 }
             }
         })
@@ -75,7 +135,7 @@ class PlaybackService : MediaSessionService() {
                 ACTION_SEEK -> {
                     val pos = intent.getLongExtra(EXTRA_POSITION, 0L)
                     exoPlayer?.seekTo(pos)
-                    _currentPosition.value = pos // Миттєве оновлення при отриманні інтенту
+                    _currentPosition.value = pos
                 }
                 ACTION_SELECT_TRACK -> {
                     val groupIdx = intent.getIntExtra(EXTRA_GROUP_INDEX, -1)
@@ -83,6 +143,16 @@ class PlaybackService : MediaSessionService() {
                     if (groupIdx != -1 && trackIdx != -1) {
                         applyAudioTrack(groupIdx, trackIdx)
                     }
+                }
+                ACTION_SELECT_SUBTITLE -> {
+                    val groupIdx = intent.getIntExtra(EXTRA_SUBTITLE_GROUP_INDEX, -1)
+                    val trackIdx = intent.getIntExtra(EXTRA_SUBTITLE_TRACK_INDEX, -1)
+                    if (groupIdx != -1 && trackIdx != -1) {
+                        applySubtitleTrack(groupIdx, trackIdx)
+                    }
+                }
+                ACTION_DISABLE_SUBTITLES -> {
+                    disableSubtitles()
                 }
             }
         }
@@ -105,6 +175,8 @@ class PlaybackService : MediaSessionService() {
             p.stop()
             p.clearMediaItems()
         }
+
+        _videoSize.value = null
 
         val database = AppDatabase.getDatabase(applicationContext).watchHistoryDao()
 
@@ -173,44 +245,150 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun updateAudioTracks(tracks: Tracks) {
-        val list = mutableListOf<AudioTrackInfo>()
-        var internalIndex = 0
+    private fun updateTracks(tracks: Tracks) {
+        val audioList = mutableListOf<AudioTrackInfo>()
+        val subtitleList = mutableListOf<SubtitleTrackInfo>()
+
+        var audioIdx = 0
+        var subIdx = 0
+
         for (groupIndex in 0 until tracks.groups.size) {
             val group = tracks.groups[groupIndex]
             if (group.type == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
                 for (trackIndex in 0 until group.length) {
                     val format = group.getTrackFormat(trackIndex)
                     val isSelected = group.isTrackSelected(trackIndex)
+                    val isSupported = group.getTrackSupport(trackIndex) >= 3
                     val lang = format.language ?: "und"
-                    val label = format.label ?: "Аудіодоріжка #${internalIndex + 1}"
+                    val label = format.label ?: "Звук #${audioIdx + 1}"
 
-                    list.add(
+                    audioList.add(
                         AudioTrackInfo(
                             groupIndex = groupIndex,
                             trackIndex = trackIndex,
                             language = lang,
                             label = label,
-                            isSelected = isSelected
+                            isSelected = isSelected,
+                            isSupported = isSupported
                         )
                     )
-                    internalIndex++
+                    audioIdx++
+                }
+            } else if (group.type == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                for (trackIndex in 0 until group.length) {
+                    val format = group.getTrackFormat(trackIndex)
+                    val isSelected = group.isTrackSelected(trackIndex)
+                    val isSupported = group.getTrackSupport(trackIndex) >= 3
+
+                    val lang = format.language ?: "und"
+                    val label = format.label ?: "Субтитри #${subIdx + 1}"
+
+                    subtitleList.add(
+                        SubtitleTrackInfo(
+                            groupIndex = groupIndex,
+                            trackIndex = trackIndex,
+                            language = lang,
+                            label = label,
+                            isSelected = isSelected,
+                            isSupported = isSupported
+                        )
+                    )
+                    subIdx++
                 }
             }
         }
-        _audioTracks.value = list
+        _audioTracks.value = audioList
+        _subtitleTracks.value = subtitleList
     }
 
     private fun applyAudioTrack(groupIndex: Int, trackIndex: Int) {
         exoPlayer?.let { player ->
             if (groupIndex < player.currentTracks.groups.size) {
+                val wasPlaying = player.playWhenReady
+                val currentPos = player.currentPosition
+
+                player.playWhenReady = false
+
                 val mediaTrackGroup = player.currentTracks.groups[groupIndex].mediaTrackGroup
+                val format = mediaTrackGroup.getFormat(trackIndex)
+                val lang = format.language
+
+                // Накладаємо пряме перекриття типу AUDIO
                 val parameters = player.trackSelectionParameters
                     .buildUpon()
-                    .setOverrideForType(androidx.media3.common.TrackSelectionOverride(mediaTrackGroup, trackIndex))
+                    .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_AUDIO)
+                    .addOverride(TrackSelectionOverride(mediaTrackGroup, listOf(trackIndex)))
+                    .apply {
+                        if (lang != null) setPreferredAudioLanguage(lang)
+                    }
                     .build()
                 player.trackSelectionParameters = parameters
+
+                if (player.playbackState == Player.STATE_IDLE) {
+                    player.prepare()
+                }
+
+                player.seekTo(currentPos)
+                player.playWhenReady = wasPlaying
             }
+        }
+    }
+
+    private fun applySubtitleTrack(groupIndex: Int, trackIndex: Int) {
+        exoPlayer?.let { player ->
+            if (groupIndex < player.currentTracks.groups.size) {
+                val wasPlaying = player.playWhenReady
+                val currentPos = player.currentPosition
+
+                player.playWhenReady = false
+
+                val mediaTrackGroup = player.currentTracks.groups[groupIndex].mediaTrackGroup
+                val format = mediaTrackGroup.getFormat(trackIndex)
+                val lang = format.language
+
+                // КРИТИЧНИЙ ФІКС: дозволяємо невизначені мови [IX] + застосовуємо точковий addOverride
+                val parameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false) // Вмикаємо текст
+                    .setSelectUndeterminedTextLanguage(true)                              // ДОЗВОЛЯЄМО БЕЗ МОВНИХ ТЕГІВ! [IX]
+                    .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_TEXT)       // Чистимо старі вибори
+                    .addOverride(TrackSelectionOverride(mediaTrackGroup, listOf(trackIndex))) // Форсуємо вибір списковим конструктором [1]
+                    .apply {
+                        if (lang != null) setPreferredTextLanguage(lang)
+                    }
+                    .build()
+                player.trackSelectionParameters = parameters
+
+                if (player.playbackState == Player.STATE_IDLE) {
+                    player.prepare()
+                }
+
+                player.seekTo(currentPos)
+                player.playWhenReady = wasPlaying
+            }
+        }
+    }
+
+    private fun disableSubtitles() {
+        exoPlayer?.let { player ->
+            val wasPlaying = player.playWhenReady
+            val currentPos = player.currentPosition
+
+            player.playWhenReady = false
+
+            val parameters = player.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true) // Вимикаємо рендерер тексту
+                .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_TEXT)       // Повністю чистимо оверрайти
+                .build()
+            player.trackSelectionParameters = parameters
+
+            if (player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
+            }
+
+            player.seekTo(currentPos)
+            player.playWhenReady = wasPlaying
         }
     }
 
@@ -224,6 +402,7 @@ class PlaybackService : MediaSessionService() {
         _playerInstance.value = null
         _currentPlayingUrl.value = null
         _isPlayerPlaying.value = false
+        _videoSize.value = null
         super.onDestroy()
     }
 
@@ -232,12 +411,16 @@ class PlaybackService : MediaSessionService() {
         const val ACTION_TOGGLE_PLAY = "com.example.torrentstreamer.action.TOGGLE_PLAY"
         const val ACTION_SEEK = "com.example.torrentstreamer.action.SEEK"
         const val ACTION_SELECT_TRACK = "com.example.torrentstreamer.action.SELECT_TRACK"
+        const val ACTION_SELECT_SUBTITLE = "com.example.torrentstreamer.action.SELECT_SUBTITLE"
+        const val ACTION_DISABLE_SUBTITLES = "com.example.torrentstreamer.action.DISABLE_SUBTITLES"
 
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_POSITION = "extra_position"
         const val EXTRA_GROUP_INDEX = "extra_group_index"
         const val EXTRA_TRACK_INDEX = "extra_track_index"
+        const val EXTRA_SUBTITLE_GROUP_INDEX = "extra_subtitle_group_index"
+        const val EXTRA_SUBTITLE_TRACK_INDEX = "extra_subtitle_track_index"
 
         private val _playerInstance = MutableStateFlow<ExoPlayer?>(null)
         val playerInstance: StateFlow<ExoPlayer?> = _playerInstance.asStateFlow()
@@ -260,10 +443,15 @@ class PlaybackService : MediaSessionService() {
         private val _audioTracks = MutableStateFlow<List<AudioTrackInfo>>(emptyList())
         val audioTracks: StateFlow<List<AudioTrackInfo>> = _audioTracks.asStateFlow()
 
+        private val _subtitleTracks = MutableStateFlow<List<SubtitleTrackInfo>>(emptyList())
+        val subtitleTracks: StateFlow<List<SubtitleTrackInfo>> = _subtitleTracks.asStateFlow()
+
         private val _isBuffering = MutableStateFlow(false)
         val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
 
-        // ОНОВЛЕНО: Статичний метод миттєвої ін'єкції нового часу у StateFlow прогресу
+        private val _videoSize = MutableStateFlow<Size?>(null)
+        val videoSize: StateFlow<Size?> = _videoSize.asStateFlow()
+
         fun updateCurrentPosition(pos: Long) {
             _currentPosition.value = pos
         }

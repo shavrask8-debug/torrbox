@@ -5,5 +5,6 @@ data class AudioTrackInfo(
     val trackIndex: Int,
     val language: String,
     val label: String,
-    val isSelected: Boolean
+    val isSelected: Boolean,
+    val isSupported: Boolean = true // Визначає, чи підтримує пристрій цей аудіокодек апаратно
 )
