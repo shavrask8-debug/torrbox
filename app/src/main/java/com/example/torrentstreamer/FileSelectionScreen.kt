@@ -1,13 +1,14 @@
+@file:Suppress("UnstableApiUsage", "DEPRECATION", "deprecation")
+
 package com.example.torrentstreamer
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import androidx.core.net.toUri // Повертаємо KTX-розширення для Uri
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
@@ -24,7 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberOverscrollEffect
 import androidx.compose.foundation.overscroll
-import androidx.compose.foundation.ScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -46,7 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import coil.compose.AsyncImage
+import coil3.compose.AsyncImage
 import com.example.torrentstreamer.data.AppDatabase
 import com.example.torrentstreamer.data.WatchHistory
 import com.example.torrentstreamer.ui.theme.SquircleShape
@@ -54,6 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import java.util.Locale
+import kotlin.time.Duration.Companion.milliseconds // Для сучасної Duration-затримки
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -71,7 +72,6 @@ fun FileSelectionScreen(
     val isLoadingFiles by viewModel.isLoadingFiles.collectAsState()
     val watchHistory by viewModel.watchHistory.collectAsState()
 
-    // ОНОВЛЕНО: Додано підписку на потік сесії для розрахунку відступів
     val latestSession by viewModel.latestSession.collectAsState()
     val density = LocalDensity.current
 
@@ -83,7 +83,7 @@ fun FileSelectionScreen(
     var showLoader by remember { mutableStateOf(false) }
     LaunchedEffect(isLoadingFiles) {
         if (isLoadingFiles) {
-            delay(200)
+            delay(200.milliseconds) // Використовуємо сучасну Duration-затримку
             showLoader = true
         } else {
             showLoader = false
@@ -100,9 +100,12 @@ fun FileSelectionScreen(
         }
     }
 
+    // КРИТИЧНА ЛАТКА: Ми повністю вилучили очищення списку серій `viewModel.clearFiles()`.
+    // Тепер список файлів не затирається при виході з екрана, усуваючи стан перегонів у Compose,
+    // і стрілки переходу в шторці та в основному плеєрі отримують 100% доступ до файлів торента!
     DisposableEffect(torrent.hash) {
         onDispose {
-            viewModel.clearFiles()
+            // Список серій безпечно утримується у ViewModel для роботи навігації плеєра
         }
     }
 
@@ -201,7 +204,6 @@ fun FileSelectionScreen(
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
             ) {
-                // 1. СТАТИЧНА КАРТКА ТОРРЕНТА (Залізно зафіксована у верхній частині)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -231,7 +233,6 @@ fun FileSelectionScreen(
                         )
                     }
                 } else {
-                    // 2. ЗОНА ФАЙЛІВ (Має нижчий Z-Index, що дозволяє індикатору висуватись з-під картки)
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -242,7 +243,6 @@ fun FileSelectionScreen(
                         val currentUrl by viewModel.currentPlayingUrl.collectAsState()
                         val hasMiniPlayer = latestSession != null || currentUrl != null
 
-                        // Рухомий LazyColumn
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -296,7 +296,7 @@ fun FileSelectionScreen(
                                 modifier = Modifier
                                     .align(Alignment.TopCenter)
                                     .graphicsLayer {
-                                        translationY = animatedContentOffset * ratioCalculate(targetGapPx = 12.dp.toPx(), indicatorHeightPx = indicatorHeightPx.toFloat(), refreshTargetOffsetPx = refreshTargetOffsetPx) - indicatorHeightPx
+                                        translationY = animatedContentOffset * ratioCalculate(targetGapPx = with(density) { 12.dp.toPx() }, indicatorHeightPx = indicatorHeightPx, refreshTargetOffsetPx = refreshTargetOffsetPx) - indicatorHeightPx
                                         scaleX = loaderAlphaAndScale
                                         scaleY = loaderAlphaAndScale
                                         alpha = loaderAlphaAndScale
@@ -614,7 +614,7 @@ fun TorrentFileExpressiveCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.OpenInNew,
-                            contentDescription = "Відкрити у VLC",
+                            contentDescription = "Відouvrir у VLC",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.size(18.dp)
                         )
@@ -778,7 +778,7 @@ fun FileActionsBottomSheet(
 
 private fun openInVlc(context: Context, videoUrl: String, title: String) {
     try {
-        val uri = Uri.parse(videoUrl)
+        val uri = videoUrl.toUri() // Використовуємо KTX String.toUri()
         val vlcIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "video/*")
             setPackage("org.videolan.vlc")
@@ -787,9 +787,9 @@ private fun openInVlc(context: Context, videoUrl: String, title: String) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(vlcIntent)
-    } catch (e: Exception) {
+    } catch (_: Exception) { // Прибрали невикористаний виняток
         val genericIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.parse(videoUrl), "video/*")
+            setDataAndType(videoUrl.toUri(), "video/*") // Використовуємо KTX String.toUri()
             putExtra("title", title)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
@@ -801,5 +801,6 @@ private fun formatFileSize(size: Long): String {
     if (size <= 0) return "0 Б"
     val units = arrayOf("Б", "КБ", "МБ", "ГБ", "ТБ")
     val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.toDouble())).toInt()
-    return String.format(Locale.US, "%.2f %s", size / Math.pow(1024.toDouble(), digitGroups.toDouble()), units[digitGroups])
+    val value = size / Math.pow(1024.toDouble(), digitGroups.toDouble())
+    return "%.2f %s".format(Locale.ROOT, value, units[digitGroups]) // Використовуємо ідіоматичне форматування Kotlin
 }

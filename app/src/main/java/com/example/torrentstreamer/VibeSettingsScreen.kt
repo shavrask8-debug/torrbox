@@ -80,7 +80,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
     var newHost by remember { mutableStateOf("") }
     var newKey by remember { mutableStateOf("") }
 
-    // Отримуємо стан міні-плеєра для динамічного відступу списку
     val currentUrl by viewModel.currentPlayingUrl.collectAsState()
     val latestSession by viewModel.latestSession.collectAsState()
     val isMiniPlayerActive = latestSession != null || currentUrl != null
@@ -315,7 +314,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                             Text("RESET TO DEFAULT", fontWeight = FontWeight.ExtraBold)
                         }
 
-                        // Компенсаційний відступ для вільного скролу кнопки Reset над плаваючим міні-плеєром
                         if (isMiniPlayerActive) {
                             Spacer(modifier = Modifier.height(100.dp))
                         }
@@ -452,7 +450,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                             }
                         }
 
-                        // Компенсаційний відступ для вільного скролу пошуку над плаваючим міні-плеєром
                         if (isMiniPlayerActive) {
                             Spacer(modifier = Modifier.height(100.dp))
                         }
@@ -496,11 +493,21 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                         }
 
                         SettingsGroup(title = "Players") {
-                            // ОНОВЛЕНО: Повністю видалено налаштування ембієнт підсвічування для збереження чистоти коду та фокусу на продуктивності!
                             SwitchSetting(
                                 label = "Prompt to open video in VLC",
                                 checked = promptVlc
                             ) { promptVlc = it }
+
+                            Spacer(Modifier.height(8.dp))
+
+                            // НОВЕ: Перемикач відображення діагностичного HUD у плеєрі
+                            val isDiagnosticsHudEnabled by viewModel.isDiagnosticsHudEnabled.collectAsState()
+                            SwitchSetting(
+                                label = "Показати діагностику відео (HUD)",
+                                checked = isDiagnosticsHudEnabled
+                            ) {
+                                viewModel.setDiagnosticsHudEnabled(it)
+                            }
                         }
 
                         Spacer(Modifier.height(16.dp))
@@ -527,7 +534,6 @@ fun VibeSettingsScreen(viewModel: MainViewModel, onBack: () -> Unit, onOpenWebAd
                             }
                         }
 
-                        // Компенсаційний відступ для вільного скролу кнопок налаштувань та карти Advanced Web UI над плаваючим міні-плеєром
                         if (isMiniPlayerActive) {
                             Spacer(modifier = Modifier.height(100.dp))
                         }

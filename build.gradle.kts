@@ -1,6 +1,6 @@
-// КОРЕНЕВИЙ build.gradle.kts (D:\Torrentstreamer\build.gradle.kts)
 plugins {
     id("com.android.application") version "9.2.1" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.2.10" apply false
-    id("com.google.devtools.ksp") version "2.2.10-2.0.2" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.0" apply false
+    id("com.google.devtools.ksp") version "2.3.10" apply false
+    id("com.github.ben-manes.versions") version "0.54.0"
 }

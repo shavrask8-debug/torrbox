@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.torrentstreamer">
 
-    <!-- Тег атрибуції для належного аудиту фонового звуку на Android 12+ (усуває помилку AppOps) -->
+    <!-- Тег атрибуції для належного аудиту фонового звуку на Android 12+ (усуваэ помилку AppOps) -->
     <attribution android:tag="audioPlayback" android:label="@string/app_name" />
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- extractNativeLibs="true" форсує розпакування бінарника на диск при встановленні -->
+    <!-- usesCleartextTraffic="true" знімає заборону Android 15/16/17 на HTTP запити до 127.0.0.1 -->
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -20,7 +22,9 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.TorrentStreamer"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:extractNativeLibs="true"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -38,11 +42,9 @@
             android:name=".PlaybackService"
             android:enabled="true"
             android:exported="true"
-            android:foregroundServiceType="mediaPlayback"
-            android:permission="android.media.browse.MediaBrowserService">
+            android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
-                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
 

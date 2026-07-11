@@ -12,6 +12,7 @@ import com.example.torrentstreamer.data.WatchHistory
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -21,8 +22,13 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    // Ініціалізуємо системні SharedPreferences на найпершому рядку в тілі класу.
+    // Це на 100% захищає компілятор від помилок передчасного зчитування стейтів у наступних змінних!
+    private val vibePrefs = application.getSharedPreferences("vibe_prefs", Context.MODE_PRIVATE)
+
     private val dao = AppDatabase.getDatabase(application).watchHistoryDao()
     private val api = TorrServerApi.create()
     private val gson = Gson()
@@ -42,24 +48,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val watchHistory = dao.getAllHistory().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val latestSession = dao.getLatestSession().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    private val vibePrefs = application.getSharedPreferences("vibe_prefs", Context.MODE_PRIVATE)
     private val _isAutoPipEnabled = MutableStateFlow(vibePrefs.getBoolean("auto_pip_enabled", true))
     val isAutoPipEnabled: StateFlow<Boolean> = _isAutoPipEnabled.asStateFlow()
 
-    // Єдиний прапорець дозволу автоповороту за системним акселерометром [IX]
     private val _isAutoRotationEnabled = MutableStateFlow(vibePrefs.getBoolean("is_auto_rotation_enabled", true))
     val isAutoRotationEnabled: StateFlow<Boolean> = _isAutoRotationEnabled.asStateFlow()
 
-    // СУМІСНІ СТАБІЛІЗАТОРИ: утримують MainActivity від помилок збірки без зміни її коду! [IX]
     val isLockedPortrait = MutableStateFlow(false).asStateFlow()
     val playerOrientationMode: StateFlow<Int> = _isAutoRotationEnabled.map { if (it) 0 else 1 }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // Реактивний потік координат плеєра від Compose
     private val _videoBounds = MutableStateFlow<android.graphics.Rect?>(null)
     val videoBounds: StateFlow<android.graphics.Rect?> = _videoBounds.asStateFlow()
 
     private var currentFilesHash: String? = null
+
+    private var loadFilesJob: Job? = null
+
+    // Потокобезпечний кеш списків серій в оперативній пам'яті
+    private val torrentFilesCache = ConcurrentHashMap<String, List<TorrentFile>>()
+
+    // Стейт-флоу та метод для перемикання діагностичного HUD у плеєрі
+    private val _isDiagnosticsHudEnabled = MutableStateFlow(vibePrefs.getBoolean("is_diagnostics_hud_enabled", false))
+    val isDiagnosticsHudEnabled: StateFlow<Boolean> = _isDiagnosticsHudEnabled.asStateFlow()
+
+    // НОВЕ: Виділений стейт-потік для ОДНОГО активно програваного торента.
+    // Сюди миттєво публікується свіжа швидкість та піри безпосередньо під час плеєра!
+    private val _activeTorrentState = MutableStateFlow<Torrent?>(null)
+    val activeTorrentState: StateFlow<Torrent?> = _activeTorrentState.asStateFlow()
+
+    fun setDiagnosticsHudEnabled(enabled: Boolean) {
+        _isDiagnosticsHudEnabled.value = enabled
+        vibePrefs.edit().putBoolean("is_diagnostics_hud_enabled", enabled).apply()
+    }
 
     init {
         refreshTorrents()
@@ -113,23 +134,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             while (true) {
                 try {
-                    val res = api.actionPost(TorrentAction(action = "list"))
-                    val jsonString = res.string()
-                    val list: List<Torrent> = gson.fromJson(jsonString, object : TypeToken<List<Torrent>>() {}.type)
+                    val playingUrl = currentPlayingUrl.value
+                    val activeHash = if (playingUrl != null) {
+                        val parts = playingUrl.split("/")
+                        if (parts.size >= 5) parts[parts.size - 2] else null
+                    } else null
 
-                    val categoryPrefs = getApplication<Application>().getSharedPreferences("torrent_categories", android.content.Context.MODE_PRIVATE)
-                    val posterPrefs = getApplication<Application>().getSharedPreferences("torrent_posters", android.content.Context.MODE_PRIVATE)
+                    if (activeHash != null) {
+                        // Опитуємо ТІЛЬКИ активний торент (поодинокий get-запит повертає один об'єкт Torrent)
+                        val res = api.actionPost(TorrentAction(action = "get", hash = activeHash))
+                        val jsonString = res.string()
+                        val torrent = gson.fromJson(jsonString, Torrent::class.java)
 
-                    val mappedList = list.map { torrent ->
-                        val localPoster = posterPrefs.getString(torrent.hash, null)
-                        torrent.copy(
-                            type = categoryPrefs.getString(torrent.hash, "Фільм") ?: "Фільм",
-                            poster = localPoster ?: torrent.poster
-                        )
+                        _activeTorrentState.value = torrent
+                    } else {
+                        _activeTorrentState.value = null
+
+                        // Звичайне легке опитування всього списку для головного екрана
+                        val res = api.actionPost(TorrentAction(action = "list"))
+                        val jsonString = res.string()
+                        val list: List<Torrent> = gson.fromJson(jsonString, object : TypeToken<List<Torrent>>() {}.type)
+
+                        val categoryPrefs = getApplication<Application>().getSharedPreferences("torrent_categories", android.content.Context.MODE_PRIVATE)
+                        val posterPrefs = getApplication<Application>().getSharedPreferences("torrent_posters", android.content.Context.MODE_PRIVATE)
+
+                        val mappedList = list.map { torrent ->
+                            val localPoster = posterPrefs.getString(torrent.hash, null)
+                            torrent.copy(
+                                type = categoryPrefs.getString(torrent.hash, "Фільм") ?: "Фільм",
+                                poster = localPoster ?: torrent.poster
+                            )
+                        }
+                        _torrents.value = sortTorrents(mappedList)
                     }
-                    _torrents.value = sortTorrents(mappedList)
                 } catch (_: Exception) { }
-                delay(3000)
+                delay(2500) // Опитування раз на 2.5 секунди
             }
         }
     }
@@ -428,16 +467,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isLoadingFiles: StateFlow<Boolean> = _isLoadingFiles.asStateFlow()
 
     fun loadFiles(hash: String, force: Boolean = false) {
-        viewModelScope.launch {
+        if (!force && torrentFilesCache.containsKey(hash)) {
+            val cachedFiles = torrentFilesCache[hash]
+            if (cachedFiles != null && cachedFiles.isNotEmpty()) {
+                _files.value = cachedFiles
+                _isLoadingFiles.value = false
+                currentFilesHash = hash
+                return
+            }
+        }
+
+        loadFilesJob?.cancel()
+        loadFilesJob = viewModelScope.launch {
             if (!force && currentFilesHash == hash && _files.value.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        val res = api.actionPost(TorrentAction(action = "get", hash = hash))
-                        val jsonString = res.string()
-                        val torrent: Torrent = gson.fromJson(jsonString, Torrent::class.java)
-                        _files.value = torrent.allFiles
-                    } catch (_: Exception) {}
-                }
                 return@launch
             }
 
@@ -447,7 +489,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentFilesHash = hash
             _isLoadingFiles.value = true
             var success = false
-            var retries = 10
+            var retries = 35
 
             while (!success && retries > 0) {
                 try {
@@ -458,6 +500,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     if (fileList.isNotEmpty()) {
                         _files.value = fileList
+
+                        torrentFilesCache[hash] = fileList
                         success = true
                     } else {
                         retries--
@@ -476,7 +520,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun clearFiles() { _files.value = emptyList() ; _isLoadingFiles.value = false }
+    fun clearFiles() {
+        _files.value = emptyList()
+        _isLoadingFiles.value = false
+        currentFilesHash = null
+    }
+
     fun clearError() { _errorMessage.value = null }
 
     fun updateProgress(url: String, title: String, pos: Long, dur: Long) {
@@ -486,10 +535,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             dao.saveProgress(WatchHistory(url, title, pos, dur, isFinished, System.currentTimeMillis()))
         }
     }
-
-    // ==========================================
-    // СТЕЙТ-БРИДЖ СИНХРОНІЗАЦІЇ МЕДІА-ПЛЕЄРА (Media3)
-    // ==========================================
 
     val playerInstance: StateFlow<androidx.media3.exoplayer.ExoPlayer?> = PlaybackService.playerInstance
     val currentPlayingUrl: StateFlow<String?> = PlaybackService.currentPlayingUrl
@@ -503,9 +548,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val isBuffering: StateFlow<Boolean> = PlaybackService.isBuffering
 
-    /**
-     * Ініціює старт фонового сервісу відтворення з передачею URL та назви.
-     */
     fun playVideo(url: String, title: String) {
         viewModelScope.launch {
             markAsLastUsed(url, title)
@@ -514,21 +556,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val intent = Intent(getApplication(), PlaybackService::class.java)
-            getApplication<Application>().startService(intent)
-
-            val playIntent = Intent(getApplication(), PlaybackService::class.java).apply {
+            val intent = Intent(getApplication(), PlaybackService::class.java).apply {
                 action = PlaybackService.ACTION_PLAY
                 putExtra(PlaybackService.EXTRA_URL, url)
                 putExtra(PlaybackService.EXTRA_TITLE, title)
             }
-            getApplication<Application>().startService(playIntent)
+            androidx.core.content.ContextCompat.startForegroundService(getApplication(), intent)
         }
     }
 
-    /**
-     * Перемикає стан відтворення (Play/Pause).
-     */
     fun togglePlayback() {
         val playPauseIntent = Intent(getApplication(), PlaybackService::class.java).apply {
             action = PlaybackService.ACTION_TOGGLE_PLAY
@@ -536,9 +572,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         getApplication<Application>().startService(playPauseIntent)
     }
 
-    /**
-     * Виконує перемотування на вказану позицію.
-     */
     fun seekToPosition(positionMs: Long) {
         PlaybackService.playerInstance.value?.seekTo(positionMs)
         PlaybackService.updateCurrentPosition(positionMs)
@@ -550,9 +583,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         getApplication<Application>().startService(serviceIntent)
     }
 
-    /**
-     * Надсилає інтент для зміни аудіодоріжки.
-     */
     fun changeAudioTrack(groupIndex: Int, trackIndex: Int) {
         val intent = Intent(getApplication(), PlaybackService::class.java).apply {
             action = PlaybackService.ACTION_SELECT_TRACK
@@ -562,31 +592,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         getApplication<Application>().startService(intent)
     }
 
-    /**
-     * Надсилає інтент для зміни доріжки субтитрів.
-     */
     fun changeSubtitleTrack(groupIndex: Int, trackIndex: Int) {
         val intent = Intent(getApplication(), PlaybackService::class.java).apply {
             action = PlaybackService.ACTION_SELECT_SUBTITLE
+            val urlParts = currentPlayingUrl.value?.split("/")
+            val fileIndex = if (urlParts != null && urlParts.size >= 5) urlParts.last().toIntOrNull() ?: -1 else -1
             putExtra(PlaybackService.EXTRA_SUBTITLE_GROUP_INDEX, groupIndex)
             putExtra(PlaybackService.EXTRA_SUBTITLE_TRACK_INDEX, trackIndex)
         }
         getApplication<Application>().startService(intent)
     }
 
-    /**
-     * Повністю деактивує субтитри.
-     */
     fun disableSubtitles() {
         val intent = Intent(getApplication(), PlaybackService::class.java).apply {
             action = PlaybackService.ACTION_DISABLE_SUBTITLES
         }
         getApplication<Application>().startService(intent)
     }
-
-    // ==========================================
-    // Системні методи перемикання епізодів
-    // ==========================================
 
     fun playNextEpisode() {
         val currentUrl = currentPlayingUrl.value ?: latestSession.value?.videoUrl ?: return

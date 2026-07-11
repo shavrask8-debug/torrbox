@@ -55,7 +55,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
-import coil.compose.AsyncImage
+import coil3.compose.AsyncImage
 import com.example.torrentstreamer.ui.theme.SquircleShape
 import java.io.File
 import java.io.FileOutputStream

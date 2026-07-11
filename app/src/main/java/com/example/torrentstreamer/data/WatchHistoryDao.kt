@@ -14,6 +14,9 @@ interface WatchHistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveProgress(history: WatchHistory)
 
+    @Query("SELECT lastPosition FROM watch_history WHERE videoUrl = :url LIMIT 1")
+    suspend fun getProgressByUrl(url: String): Long?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveMetadata(metadata: TorrentMetadata)
 

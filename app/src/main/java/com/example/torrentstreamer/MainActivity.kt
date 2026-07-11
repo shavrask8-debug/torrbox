@@ -1,3 +1,8 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.media3.common.util.UnstableApi::class
+)
+
 package com.example.torrentstreamer
 
 import android.annotation.SuppressLint
@@ -6,6 +11,9 @@ import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
@@ -34,8 +42,8 @@ import com.example.torrentstreamer.ui.theme.TorrentStreamerTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import androidx.media3.common.util.UnstableApi
 
-@OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
@@ -43,7 +51,7 @@ class MainActivity : ComponentActivity() {
     private var currentStreamUrl by mutableStateOf<String?>(null)
     private var currentStreamTitle by mutableStateOf<String?>(null)
 
-    // Стейт Picture-in-Picture режиму
+    // Стан Picture-in-Picture режиму
     private var isPipModeActive by mutableStateOf(false)
 
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
@@ -52,19 +60,31 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
+        // ДИНАМІЧНИЙ ЗАПИТ ДОЗВОЛУ НА СПОВІЩЕННЯ ДЛЯ ANDROID 13+ (ПОТРІБЕН ДЛЯ МЕДІАПЛЕЄРА В ПАНЕЛІ СПОВІЩЕНЬ)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
+
         TorrServerManager.start(this)
 
-        // Конфігурація Auto-PiP для Android 12+ (API 31+) з динамічним усуненням чорних смуг [IX]
+        // Перевіряємо запуск із системної каруселі швидких налаштувань
+        handleIntent(intent)
+
+        // Налаштування Auto-PiP для Android 12+ (API 31+) з динамічним усуненням чорних смуг
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
                     combine(
                         viewModel.currentPlayingUrl, // Зчитуємо фоновий стан відтворення у сервісі
                         viewModel.isAutoPipEnabled,  // Дозвіл користувача
-                        viewModel.videoBounds,       // Фізичні межі плеєра у Compose (обрізані від чорних смуг)
-                        viewModel.videoSize          // Фізичний розмір відеопотоку від декодера ExoPlayer
-                    ) { activeUrl, autoPipEnabled, bounds, vSize ->
-                        DataPipPackage(activeUrl != null && autoPipEnabled, bounds, vSize)
+                        viewModel.videoBounds,       // Физичні межі плеєра у Compose (обрізані від чорних смуг)
+                        viewModel.videoSize,         // Фізичний розмір відеопотоку від декодера ExoPlayer
+                        viewModel.isPlayerPlaying    // Стан активного відтворення відео
+                    ) { activeUrl, autoPipEnabled, bounds, vSize, playing ->
+                        // PiP запускається тільки якщо відео реально грає на екрані
+                        DataPipPackage(activeUrl != null && autoPipEnabled && playing, bounds, vSize)
                     }.collect { data ->
                         val paramsBuilder = PictureInPictureParams.Builder()
 
@@ -74,7 +94,7 @@ class MainActivity : ComponentActivity() {
                             paramsBuilder.setSourceRectHint(data.bounds)
                         }
 
-                        // УСУНЕННЯ ЧОРНИХ СМУГ: пропорції вікна PiP під реальний формат медіафайлу [IX]
+                        // УСУНЕННЯ ЧОРНИХ СМУГ: пропорції вікна PiP під реальний формат медіафайлу
                         val rat = when {
                             data.vSize != null && data.vSize.width > 0 && data.vSize.height > 0 -> {
                                 Rational(data.vSize.width, data.vSize.height)
@@ -152,7 +172,7 @@ class MainActivity : ComponentActivity() {
 
                         when {
                             // КРИТИЧНО: Якщо PiP-режим активний і у фоні працює відтворення —
-                            // примусово підміняємо розмітку вікна на чистий PlayerScreen, ховаючи налаштування чи списки торентів [IX]!
+                            // примусово підміняємо розмітку вікна на чистий PlayerScreen, ховаючи налаштування чи списки торентів
                             isPipModeActive && currentStreamUrl == null && activePlaybackUrl != null -> {
                                 PlayerScreen(
                                     videoUrl = activePlaybackUrl!!,
@@ -242,10 +262,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Резервний PiP-запуск для Android 8-11 (API 26-30) при згортанні додатка користувачем [IX]
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent) // Оновлюємо інтент активності для обробника
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action == "com.example.torrentstreamer.action.OPEN_PLAYER") {
+            // КРИТИЧНИЙ ФІКС: пряме читання статичного стану сервісу для 100% надійності розгортання
+            val activeUrl = PlaybackService.currentPlayingUrl.value
+            val activeTitle = PlaybackService.currentTitle.value
+            if (activeUrl != null && activeTitle != null) {
+                currentStreamUrl = activeUrl
+                currentStreamTitle = activeTitle
+            }
+        }
+    }
+
+    // Резервний запуск PiP для Android 8-11 (API 26-30) при згортанні програми користувачем
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val isPlaying = viewModel.currentPlayingUrl.value != null
+        val isPlaying = viewModel.isPlayerPlaying.value // Перевіряємо чи відтворюється реально на паузі чи ні
         val isAutoPipEnabled = viewModel.isAutoPipEnabled.value
 
         if (isPlaying && isAutoPipEnabled) {
@@ -278,7 +316,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Слухач апаратної зміни стану PiP-режиму
+    // Слухач зміни стану режиму Picture-in-Picture на рівні пристрою
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
         newConfig: android.content.res.Configuration
@@ -286,10 +324,10 @@ class MainActivity : ComponentActivity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isPipModeActive = isInPictureInPictureMode
 
-        // КРИТИЧНО: ВИРІШЕННЯ БАГУ ПОРТРЕТНОЇ ОРІЄНТАЦІЇ ПРИ РОЗГОРТАННІ PiP [IX]
+        // КРИТИЧНО: ВИРІШЕННЯ БАГУ ПОРТРЕТНОЇ ОРІЄНТАЦІЇ ПРИ ЗАКРИТТІ PiP
         if (!isInPictureInPictureMode) {
             if (currentStreamUrl != null) {
-                // Відновлюємо орієнтацію на базі нових прапорців у MainViewModel [IX]
+                // Відновлюємо орієнтацію на базі нових прапорців у MainViewModel
                 val autoRotate = viewModel.isAutoRotationEnabled.value
                 val lockedPortrait = viewModel.isLockedPortrait.value
 
@@ -300,14 +338,14 @@ class MainActivity : ComponentActivity() {
                 }
             } else {
                 // Якщо користувач згорнув плеєр і переглядав інші розділи програми —
-                // примусово повертаємо ПОРТРЕТНИЙ РЕЖИМ замість Unspecified, що гарантує вертикальний інтерфейс [IX]!
+                // примусово повертаємо портретний режим замість Unspecified, що гарантує вертикальний інтерфейс
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             }
         }
     }
 }
 
-// Допоміжний контейнер передачі параметрів PiP для Flow-злиття
+// Допоміжний контейнер для передачі параметрів PiP
 private data class DataPipPackage(
     val shouldAutoPip: Boolean,
     val bounds: android.graphics.Rect?,
